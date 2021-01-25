@@ -1,11 +1,11 @@
 [package]
-name = "pyre"
+name = "pyre-test"
 version = "0.1.1"
 authors = ["Harrison Burt <57491488+ChillFish8@users.noreply.github.com>"]
 edition = "2018"
 
 [lib]
-name = "pyre"
+name = "pyre_test"
 crate-type = ["cdylib"]
 
 [dependencies.pyo3]
