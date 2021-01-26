@@ -3,8 +3,14 @@ use mio::Token;
 
 use std::net::{SocketAddr, Shutdown};
 use std::error::Error;
+use std::io::ErrorKind;
 
 use crate::pyre_server::transport::EventLoopHandle;
+use crate::pyre_server::protocol_manager::AutoProtocol;
+use crate::pyre_server::switch::SelectedProtocol;
+use crate::pyre_server::py_callback::CallbackHandler;
+use crate::pyre_server::socket_io::BufferIO;
+use crate::pyre_server::abc::SocketCommunicator;
 
 
 /// A handler for a TcpStream.
@@ -22,7 +28,10 @@ pub struct Client {
     pub stream: TcpStream,
 
     /// A cheaply cloneable handle for updating event loop calls.
-    transport: EventLoopHandle,
+    event_loop: EventLoopHandle,
+
+    /// The high level protocol call handler.
+    protocol: AutoProtocol,
 
     /// Is the socket being listened to by the event loop for reading.
     pub is_reading: bool,
@@ -42,13 +51,22 @@ impl Client {
         token: Token,
         stream: TcpStream,
         addr: SocketAddr,
-        transport: EventLoopHandle,
+        event_loop: EventLoopHandle,
+        callbacks: CallbackHandler,
     ) -> Self {
+        let protocol = AutoProtocol::new(
+            token,
+            SelectedProtocol::H1,
+            event_loop.clone(),
+            callbacks,
+        );
+
         Self {
             token,
             stream,
             addr,
-            transport,
+            event_loop,
+            protocol,
 
             is_reading: false,
             is_writing: false,
@@ -80,6 +98,30 @@ impl Client {
     /// This should be used to propel the state machine of the server
     /// for the most part e.g. parsing and invoking callbacks.
     pub fn read_ready(&mut self) -> Result<(), Box<dyn Error>> {
+        loop {
+            let mut buffer = self.protocol.read_buffer_acquire()?;
+
+            let n = match self.stream.read_buf(&mut buffer) {
+                Ok(n) => n,
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    return Ok(())
+                },
+                Err(ref e) if e.kind() == ErrorKind::ConnectionReset => {
+                    return self.sock_shutdown();
+                },
+                Err(ref e) if e.kind() == ErrorKind::ConnectionAborted => {
+                    return self.sock_shutdown();
+                },
+                Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => {
+                    return self.sock_shutdown();
+                },
+                Err(e) => {
+                    return Err(Box::new(e))
+                },
+            };
+
+            self.protocol.read_buffer_filled(n)?;
+        }
 
         Ok(())
     }
@@ -90,6 +132,30 @@ impl Client {
     /// but that should mostly be done with the read event, this can
     /// be used to drain the writing buffer and wake up python tasks.
     pub fn write_ready(&mut self) -> Result<(), Box<dyn Error>> {
+        loop {
+            let mut buffer = self.protocol.write_buffer_acquire()?;
+
+            let n = match self.stream.write_buf(&mut buffer) {
+                Ok(n) => n,
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    return Ok(())
+                },
+                Err(ref e) if e.kind() == ErrorKind::ConnectionReset => {
+                    return self.sock_shutdown();
+                },
+                Err(ref e) if e.kind() == ErrorKind::ConnectionAborted => {
+                    return self.sock_shutdown();
+                },
+                Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => {
+                    return self.sock_shutdown();
+                },
+                Err(e) => {
+                    return Err(Box::new(e))
+                },
+            };
+
+            self.protocol.write_buffer_drained(n);
+        }
 
         Ok(())
     }
@@ -104,6 +170,9 @@ impl Client {
     /// NOTE:
     /// This is not guaranteed to always be called when a socket shuts down.
     pub fn sock_shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        println!("Shutdown");
+        self.protocol.lost_connection()?;
+
         self.is_idle = true;
         let _ = self.stream.shutdown(Shutdown::Write);
         Ok(())

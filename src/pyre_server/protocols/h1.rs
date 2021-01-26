@@ -63,8 +63,14 @@ impl H1Protocol {
         callback: CallbackHandler,
         event_loop: EventLoopHandle,
     ) -> Self {
-        let sender = SenderHandler::new();
-        let receiver = ReceiverHandler::new();
+        let sender = SenderHandler::new(
+            token,
+            event_loop.clone()
+        );
+        let receiver = ReceiverHandler::new(
+            token,
+            event_loop.clone()
+        );
 
         Self {
             token,
@@ -122,9 +128,6 @@ impl ProtocolBuffers for H1Protocol {
 
         self.on_request_parse(&mut request)?;
 
-
-        // todo add socket control
-
         Ok(())
     }
 
@@ -133,12 +136,14 @@ impl ProtocolBuffers for H1Protocol {
             buffer.extend(buff);
         }
 
+        self.event_loop.pause_writing(self.token);
+
         Ok(())
     }
 
     fn eof_received(&mut self) -> PyResult<()> {
-        // todo add socket control
-
+        self.event_loop.pause_reading(self.token);
+        self.event_loop.pause_writing(self.token);
         Ok(())
     }
 }

@@ -12,7 +12,7 @@ use rustc_hash::FxHashMap;
 
 use crate::pyre_server::client::Client;
 use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, EventLoopHandle};
-
+use crate::pyre_server::py_callback::CallbackHandler;
 
 
 /// The standard server identifier token.
@@ -76,20 +76,27 @@ pub struct HighLevelServer {
     counter: TokenCounter,
 
     /// A queue of updates that stack up for the event loop.
-    transport: EventLoopHandle,
+    event_loop: EventLoopHandle,
+
+    /// The python callbacks to invoke on a request.
+    callbacks: CallbackHandler,
 }
 
 impl HighLevelServer {
     /// Build a new HighLevelServer that takes the poll struct instance
     /// in order to share it with clients.
-    pub fn new(transport: EventLoopHandle) -> Self {
+    pub fn new(
+        event_loop: EventLoopHandle,
+        callbacks: CallbackHandler,
+    ) -> Self {
         let clients = FxHashMap::default();
         let counter = TokenCounter::new();
 
         Self {
             clients,
             counter,
-            transport,
+            event_loop,
+            callbacks,
         }
     }
 
@@ -138,13 +145,14 @@ impl HighLevelServer {
                 token,
                 stream,
                 addr,
-                self.transport.clone(),
+                self.event_loop.clone(),
+                self.callbacks.clone(),
             );
 
             self.clients.insert(token, client);
         }
 
-        self.transport.resume_reading(token);
+        self.event_loop.resume_reading(token);
 
         Ok(())
     }
@@ -170,6 +178,7 @@ impl HighLevelServer {
 
     /// Invoked every n seconds checking for keep alive on sockets.
     fn keep_alive_tick(&mut self) {
+        println!("Keep alive");
         for (_, client) in self.clients.iter_mut() {
             if let Err(e) = client.check_keep_alive() {
                 eprintln!("Exception handling client: {:?}", e);
@@ -214,6 +223,7 @@ impl LowLevelServer {
     pub fn from_addr(
         addr: String,
         keep_alive_timeout: Duration,
+        callbacks: CallbackHandler,
     ) -> io::Result<Self> {
         let host = addr.parse()
             .expect("Failed to build SocketAddr from addr");
@@ -234,7 +244,10 @@ impl LowLevelServer {
             Arc::new(waker),
         );
 
-        let high_level = HighLevelServer::new(transport);
+        let high_level = HighLevelServer::new(
+            transport,
+            callbacks,
+        );
 
         Ok(Self {
             host,
