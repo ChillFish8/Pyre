@@ -1,5 +1,5 @@
 use mio::net::{TcpStream, TcpListener};
-use mio::{Poll, Events, Token, Interest};
+use mio::{Poll, Events, Token, Interest, Waker};
 use mio::event::Event;
 
 use std::net::SocketAddr;
@@ -7,15 +7,20 @@ use std::io;
 use std::error::Error;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-
+use crossbeam::queue::SegQueue;
 
 use crate::pyre_server::client::Client;
+use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, Transport};
 
 
 /// The standard server identifier token.
 const SERVER: Token = Token(0);
+
+/// The wakeup event that checks updates.
+const CHECK_UPDATE: Token = Token(1);
 
 /// The MAX events that can be enqueued at any one time.
 const EVENTS_MAX: usize = 128;
@@ -36,15 +41,19 @@ pub enum SocketPollState {
 }
 
 
+/// A simple incremental counter that produces new tokens with its
+/// given internal counter.
 struct TokenCounter {
     internal: usize,
 }
 
 impl TokenCounter {
+    /// Make a new counter that starts at `0`
     fn new() -> Self {
-        Self { internal: 0 }
+        Self { internal: 2 }
     }
 
+    /// Get a new token from the counter.
     fn next(&mut self) -> Token {
         self.internal += 1;
         let id = self.internal;
@@ -64,31 +73,31 @@ pub struct HighLevelServer {
     /// invoke the relevant callbacks when the event loop state changes.
     clients: FxHashMap<Token, Client>,
 
-    /// A cheaply cloneable reference to the main poller of the event loop.
-    poll: Rc<RefCell<Poll>>,
-
     /// The incremental counter that is used to generate new tokens.
     counter: TokenCounter,
+
+    /// A queue of updates that stack up for the event loop.
+    transport: Transport,
 }
 
 impl HighLevelServer {
     /// Build a new HighLevelServer that takes the poll struct instance
     /// in order to share it with clients.
-    pub fn new(poll: Rc<RefCell<Poll>>) -> Self {
+    pub fn new(transport: Transport) -> Self {
         let clients = FxHashMap::default();
         let counter = TokenCounter::new();
 
         Self {
             clients,
-            poll,
             counter,
+            transport,
         }
     }
 
     /// Invoked when ever a client is accepted from the listener.
     fn client_accepted(
         &mut self,
-        mut stream: TcpStream,
+        stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
 
@@ -97,6 +106,7 @@ impl HighLevelServer {
             token,
             stream,
             addr,
+            self.transport.clone(),
         );
 
         self.clients.insert(token, client);
@@ -136,7 +146,10 @@ pub struct LowLevelServer {
     listener: TcpListener,
 
     /// A cheaply cloneable reference to the main poller of the event loop.
-    poll: Rc<RefCell<Poll>>,
+    poll: Poll,
+
+    /// A queue of updates that stack up for the event loop.
+    updates: UpdatesQueue,
 
     /// The high-level server that handles everything other than the OS
     /// interactions.
@@ -153,14 +166,27 @@ impl LowLevelServer {
 
         let listener = TcpListener::bind(host)?;
 
-        let poll = Rc::new(RefCell::new(Poll::new()?));
+        let poll = Poll::new()?;
 
-        let event_handler = HighLevelServer::new(poll.clone());
+        let updates = UpdatesQueue::default();
+
+        let waker = Waker::new(
+            poll.registry(),
+            CHECK_UPDATE
+        )?;
+
+        let transport = Transport::from_queue_and_waker(
+            updates.clone(),
+            Arc::new(waker),
+        );
+
+        let event_handler = HighLevelServer::new(transport);
 
         Ok(Self {
             host,
             listener,
             poll,
+            updates,
             event_handler,
         })
     }
@@ -171,16 +197,15 @@ impl LowLevelServer {
     pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
         let mut events = Events::with_capacity(EVENTS_MAX);
 
-        self.poll.borrow()
-            .registry().register(
+        self.poll.registry()
+            .register(
             &mut self.listener,
             SERVER,
             Interest::READABLE
-        )?;
+            )?;
 
         loop {
-            self.poll.borrow_mut()
-                .poll(&mut events, None)?;
+            self.poll.poll(&mut events, None)?;
 
             self.process_events(&events)?;
         }
@@ -196,6 +221,7 @@ impl LowLevelServer {
         for event in events.iter() {
             match event.token() {
                 SERVER => self.on_client_incoming()?,
+                CHECK_UPDATE => self.on_update_wakeup()?,
                 _ => self.on_socket_state_change(event)?,
             }
         }
@@ -209,15 +235,27 @@ impl LowLevelServer {
             let (client, addr) = match self.listener.accept() {
                 Ok(pair) => pair,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    return Ok(())
+                    break;
                 },
                 Err(e) => {
                     eprintln!("Failed accepting from listener: {:?}", e);
-                    return Ok(())
+                    return Ok(());
                 },
             };
             self.event_handler.client_accepted(client, addr)?;
         }
+
+        self.poll.registry()
+            .reregister(
+            &mut self.listener,
+            SERVER,
+            Interest::READABLE
+            )?;
+
+        Ok(())
+    }
+
+    fn on_update_wakeup(&mut self) -> Result<(), Box<dyn Error>> {
 
         Ok(())
     }

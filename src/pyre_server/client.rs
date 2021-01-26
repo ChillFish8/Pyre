@@ -1,8 +1,12 @@
 use mio::net::TcpStream;
-use mio::Token;
+use mio::{Token, Poll};
 
 use std::net::SocketAddr;
 use std::error::Error;
+use std::rc::Rc;
+use std::cell::RefCell;
+
+use crate::pyre_server::transport::Transport;
 
 
 /// A handler for a TcpStream.
@@ -10,9 +14,17 @@ use std::error::Error;
 /// This is in charge of managing both the socket and it's relevant event loop
 /// handling e.g. adding and remove the socket from the event loop.
 pub struct Client {
+    /// The event loop token identifier.
     token: Token,
+
+    /// The remote address of the stream.
     addr: SocketAddr,
-    stream: TcpStream,
+
+    /// The TcpStream itself.
+    pub stream: TcpStream,
+
+    /// A cheaply cloneable handle for updating event loop calls.
+    transport: Transport,
 }
 
 impl Client {
@@ -22,11 +34,13 @@ impl Client {
         token: Token,
         stream: TcpStream,
         addr: SocketAddr,
+        transport: Transport,
     ) -> Self {
         Self {
             token,
             stream,
             addr,
+            transport,
         }
     }
 }
