@@ -35,7 +35,9 @@ fn create_server(
     let bind = format!("{}:{}", host, port);
 
     let mut server = server::LowLevelServer::from_addr(bind)?;
-    server.start();
+    if let Err(e) = server.start() {
+        eprintln!("{:?}", e);
+    };
     Ok(())
 }
 

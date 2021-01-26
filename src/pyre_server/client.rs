@@ -62,7 +62,7 @@ impl Client {
     /// This should be used to propel the state machine of the server
     /// for the most part e.g. parsing and invoking callbacks.
     pub fn read_ready(&mut self) -> Result<(), Box<dyn Error>> {
-
+        println!("Ready to read");
         Ok(())
     }
 
@@ -86,7 +86,7 @@ impl Client {
     /// NOTE:
     /// This is not guaranteed to always be called when a socket shuts down.
     pub fn sock_shutdown(&mut self) -> Result<(), Box<dyn Error>> {
-
+        println!("Shutdown");
         Ok(())
     }
 }

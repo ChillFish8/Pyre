@@ -111,6 +111,8 @@ impl HighLevelServer {
 
         self.clients.insert(token, client);
 
+        self.transport.resume_reading(token);
+
         Ok(())
     }
 
@@ -157,7 +159,7 @@ pub struct LowLevelServer {
 
     /// The high-level server that handles everything other than the OS
     /// interactions.
-    event_handler: HighLevelServer,
+    high_level: HighLevelServer,
 }
 
 impl LowLevelServer {
@@ -184,14 +186,14 @@ impl LowLevelServer {
             Arc::new(waker),
         );
 
-        let event_handler = HighLevelServer::new(transport);
+        let high_level = HighLevelServer::new(transport);
 
         Ok(Self {
             host,
             listener,
             poll,
             updates,
-            event_handler,
+            high_level,
         })
     }
 
@@ -246,7 +248,8 @@ impl LowLevelServer {
                     return Ok(());
                 },
             };
-            self.event_handler.client_accepted(client, addr)?;
+
+            self.high_level.client_accepted(client, addr)?;
         };
 
         Ok(())
@@ -270,20 +273,22 @@ impl LowLevelServer {
 
         let token = event.token();
         if event.is_readable() {
-            self.event_handler.socket_state_update(
+            self.high_level.socket_state_update(
                 token,
                 SocketPollState::Read
             )?;
         } else if event.is_writable() {
-            self.event_handler.socket_state_update(
+            self.high_level.socket_state_update(
                 token,
                 SocketPollState::Write
             )?;
         } else if event.is_write_closed() | event.is_read_closed() {
-            self.event_handler.socket_state_update(
+            self.high_level.socket_state_update(
                 token,
                 SocketPollState::Shutdown,
             )?;
+
+            // Lets remove everything and shut this stream down.
             self.pause_writing(token)?;
             self.pause_reading(token)?;
         }
@@ -312,7 +317,7 @@ impl LowLevelServer {
     }
 
     fn pause_reading(&mut self, token: Token) -> io::Result<()> {
-        let client = self.event_handler.get_client(&token);
+        let client = self.high_level.get_client(&token);
 
         // Only need to change something if its actually doing it.
         if client.is_reading {
@@ -333,7 +338,7 @@ impl LowLevelServer {
     }
 
     fn pause_writing(&mut self, token: Token) -> io::Result<()> {
-        let client = self.event_handler.get_client(&token);
+        let client = self.high_level.get_client(&token);
 
         // Only need to change something if its actually doing it.
         if client.is_writing {
@@ -354,7 +359,7 @@ impl LowLevelServer {
     }
 
     fn resume_reading(&mut self, token: Token) -> io::Result<()> {
-        let client = self.event_handler.get_client(&token);
+        let client = self.high_level.get_client(&token);
 
         // Only need to change something if its actually doing it.
         if !client.is_reading {
@@ -365,7 +370,7 @@ impl LowLevelServer {
                     Interest::READABLE | Interest::WRITABLE,
                 )?;
             } else {
-                self.poll.registry().reregister(
+                self.poll.registry().register(
                     &mut client.stream,
                     token,
                     Interest::READABLE,
@@ -379,7 +384,7 @@ impl LowLevelServer {
     }
 
     fn resume_writing(&mut self, token: Token) -> io::Result<()> {
-        let client = self.event_handler.get_client(&token);
+        let client = self.high_level.get_client(&token);
 
         // Only need to change something if its actually doing it.
         if !client.is_writing {
@@ -390,7 +395,7 @@ impl LowLevelServer {
                     Interest::READABLE | Interest::WRITABLE,
                 )?;
             } else {
-                self.poll.registry().reregister(
+                self.poll.registry().register(
                     &mut client.stream,
                     token,
                     Interest::WRITABLE,

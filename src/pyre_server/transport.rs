@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use mio::{Waker, Token};
 use std::sync::Arc;
 use crossbeam::queue::SegQueue;
