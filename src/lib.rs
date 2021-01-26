@@ -8,6 +8,8 @@ static GLOBAL: Jemalloc = Jemalloc;
 mod pyre_server;
 
 use crate::pyre_server::server;
+use crate::pyre_server::responders::receiver::DataReceiver;
+use crate::pyre_server::responders::sender::DataSender;
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -56,8 +58,7 @@ fn create_server(
 #[pymodule]
 fn pyre_test(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(create_server, m)?)?;
-    //m.add_class::<_Server>()?;
-    //m.add_class::<DataSender>()?;
-    //m.add_class::<DataReceiver>()?;
+    m.add_class::<DataSender>()?;
+    m.add_class::<DataReceiver>()?;
     Ok(())
 }

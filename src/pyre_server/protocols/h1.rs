@@ -18,12 +18,13 @@ use std::sync::Arc;
 use std::str;
 
 use bytes::{BytesMut, Bytes};
-
+use mio::Token;
 use crossbeam::channel::{Sender, Receiver, unbounded};
 
 use httparse::{Status, parse_chunk_size, Header, Request};
 use http::version::Version;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
+
 
 
 /// The max headers allowed in a single request.
@@ -37,6 +38,9 @@ pub struct H1Protocol {
     /// is not initialised before it starts handling interactions but this
     /// should never happen.
     event_loop: EventLoopHandle,
+
+    /// The client token that identifies itself.
+    token: Token,
 
     /// The python callback handler.
     callback: CallbackHandler,
@@ -55,6 +59,7 @@ pub struct H1Protocol {
 impl H1Protocol {
     /// Create a new H1Protocol instance.
     pub fn new(
+        token: Token,
         callback: CallbackHandler,
         event_loop: EventLoopHandle,
     ) -> Self {
@@ -62,6 +67,7 @@ impl H1Protocol {
         let receiver = ReceiverHandler::new();
 
         Self {
+            token,
             event_loop,
             callback,
             sender,
