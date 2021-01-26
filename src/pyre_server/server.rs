@@ -14,6 +14,7 @@ use crossbeam::queue::SegQueue;
 
 use crate::pyre_server::client::Client;
 use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, EventLoopHandle};
+use std::time::Duration;
 
 
 /// The standard server identifier token.
@@ -135,6 +136,11 @@ impl HighLevelServer {
         Ok(())
     }
 
+    /// Invoked every n seconds checking for keep alive on sockets.
+    fn keep_alive_tick(&mut self) {
+
+    }
+
     fn get_client(&mut self, token: &Token) -> &mut Client {
         self.clients.get_mut(token)
             .expect("Failed to get client from token.")
@@ -160,13 +166,19 @@ pub struct LowLevelServer {
     /// The high-level server that handles everything other than the OS
     /// interactions.
     high_level: HighLevelServer,
+
+    /// The max time between data handling.
+    keep_alive_timeout: Duration,
 }
 
 impl LowLevelServer {
     /// Builds a server instance from a given addr string e.g.
     /// `127.0.0.1:8080`, this has the potential to raise an io Error
     /// as it binds to the socket in the process of building this server.
-    pub fn from_addr(addr: String) -> io::Result<Self> {
+    pub fn from_addr(
+        addr: String,
+        keep_alive_timeout: Duration,
+    ) -> io::Result<Self> {
         let host = addr.parse()
             .expect("Failed to build SocketAddr from addr");
 
@@ -194,6 +206,7 @@ impl LowLevelServer {
             poll,
             updates,
             high_level,
+            keep_alive_timeout,
         })
     }
 
@@ -211,7 +224,18 @@ impl LowLevelServer {
             )?;
 
         loop {
-            self.poll.poll(&mut events, None)?;
+            let status = self.poll.poll(
+                &mut events,
+                Some(self.keep_alive_timeout)
+            );
+
+            if let Err(e) = status {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    self.high_level.keep_alive_tick();
+                } else {
+                    eprintln!("{:?}", e);
+                }
+            }
 
             self.process_events(&events)?;
         }
