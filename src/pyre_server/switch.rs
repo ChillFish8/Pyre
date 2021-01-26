@@ -1,7 +1,10 @@
 use pyo3::PyResult;
 
-pub enum SelectedProtocol {
 
+/// The Protocol that is currently active.
+pub enum SelectedProtocol {
+    /// The HTTP/1.x protocol handler.
+    H1,
 }
 
 

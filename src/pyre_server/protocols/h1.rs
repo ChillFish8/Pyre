@@ -24,7 +24,7 @@ use crossbeam::channel::{Sender, Receiver, unbounded};
 use httparse::{Status, parse_chunk_size, Header, Request};
 use http::version::Version;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
-
+use std::error::Error;
 
 
 /// The max headers allowed in a single request.
@@ -106,9 +106,10 @@ impl ProtocolBuffers for H1Protocol {
         let mut request = Request::new(&mut headers);
         let status = match request.parse(&body) {
             Ok(status) => status,
-            Err(e) => return Err(PyRuntimeError::new_err(format!(
-                "{:?}", e  // todo remove this, add custom http response.
-            )))
+            Err(e) => {
+                eprintln!("{:?}", e);
+                return Ok(())
+            }
         };
 
         let len= if status.is_partial() {
