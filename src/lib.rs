@@ -34,11 +34,7 @@ fn create_server(
     println!("Running on http://{}:{}", host, port);
     let bind = format!("{}:{}", host, port);
 
-    let high_level = server::HighLevelServer::new();
-    let mut server = server::LowLevelServer::from_addr(
-        bind,
-        high_level
-    )?;
+    let mut server = server::LowLevelServer::from_addr(bind)?;
     server.start();
     Ok(())
 }

@@ -8,6 +8,11 @@ use std::error::Error;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
+
+
+use crate::pyre_server::client::Client;
+
 
 /// The standard server identifier token.
 const SERVER: Token = Token(0);
@@ -16,10 +21,38 @@ const SERVER: Token = Token(0);
 const EVENTS_MAX: usize = 128;
 
 
+/// The state that has updated on the socket showing its readiness.
 pub enum SocketPollState {
+    /// The socket can (maybe) be read from.
     Read,
+
+    /// The socket can (maybe) be written to.
     Write,
+
+    /// A end of the socket has been shutdown so communication
+    /// cannot continue, note that this may or may not always
+    /// happen so it's important to not implicitly rely on this.
+    Shutdown,
 }
+
+
+struct TokenCounter {
+    internal: usize,
+}
+
+impl TokenCounter {
+    fn new() -> Self {
+        Self { internal: 0 }
+    }
+
+    fn next(&mut self) -> Token {
+        self.internal += 1;
+        let id = self.internal;
+
+        Token(id)
+    }
+}
+
 
 /// The high-level handler for interacting with the server.
 ///
@@ -27,27 +60,66 @@ pub enum SocketPollState {
 /// as the state machine is driven by the events emitted from the
 /// LowLevelServer.
 pub struct HighLevelServer {
+    /// The mapping that stores all active clients, this is used to
+    /// invoke the relevant callbacks when the event loop state changes.
+    clients: FxHashMap<Token, Client>,
 
+    /// A cheaply cloneable reference to the main poller of the event loop.
+    poll: Rc<RefCell<Poll>>,
+
+    /// The incremental counter that is used to generate new tokens.
+    counter: TokenCounter,
 }
 
 impl HighLevelServer {
-    pub fn new() -> Self {
-        Self {}
+    /// Build a new HighLevelServer that takes the poll struct instance
+    /// in order to share it with clients.
+    pub fn new(poll: Rc<RefCell<Poll>>) -> Self {
+        let clients = FxHashMap::default();
+        let counter = TokenCounter::new();
+
+        Self {
+            clients,
+            poll,
+            counter,
+        }
     }
 
+    /// Invoked when ever a client is accepted from the listener.
     fn client_accepted(
         &mut self,
-        stream: TcpStream,
+        mut stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
+
+        let token = self.counter.next();
+        let client = Client::build_from(
+            token,
+            stream,
+            addr,
+        );
+
+        self.clients.insert(token, client);
+
         Ok(())
     }
 
+    /// Invoked when ever a client state changes e.g. reading, writing or
+    /// shutdown readiness.
     fn socket_state_update(
         &mut self,
         token: Token,
         state: SocketPollState
     ) -> Result<(), Box<dyn Error>> {
+        let client = self.clients.get_mut(&token)
+            .expect("No client at token.");
+
+        match state {
+            SocketPollState::Read => client.read_ready()?,
+            SocketPollState::Write => client.write_ready()?,
+            SocketPollState::Shutdown => client.sock_shutdown()?,
+        };
+
         Ok(())
     }
 
@@ -75,16 +147,15 @@ impl LowLevelServer {
     /// Builds a server instance from a given addr string e.g.
     /// `127.0.0.1:8080`, this has the potential to raise an io Error
     /// as it binds to the socket in the process of building this server.
-    pub fn from_addr(
-        addr: String,
-        event_handler: HighLevelServer
-    ) -> io::Result<Self> {
+    pub fn from_addr(addr: String) -> io::Result<Self> {
         let host = addr.parse()
             .expect("Failed to build SocketAddr from addr");
 
         let listener = TcpListener::bind(host)?;
 
         let poll = Rc::new(RefCell::new(Poll::new()?));
+
+        let event_handler = HighLevelServer::new(poll.clone());
 
         Ok(Self {
             host,
@@ -98,7 +169,6 @@ impl LowLevelServer {
     /// will never exit unless ther`e is an error that causes and abruptly
     /// stops the loop.
     pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
-        println!("Starting");
         let mut events = Events::with_capacity(EVENTS_MAX);
 
         self.poll.borrow()
@@ -160,13 +230,25 @@ impl LowLevelServer {
     )  -> Result<(), Box<dyn Error>> {
 
         if event.is_readable() {
-            self.event_handler
+            self.event_handler.socket_state_update(
+                event.token(),
+                SocketPollState::Read
+            )?;
         }
 
         if event.is_writable() {
-            self.event_handler
+            self.event_handler.socket_state_update(
+                event.token(),
+                SocketPollState::Write
+            )?;
         }
 
+        if event.is_write_closed() | event.is_read_closed() {
+            self.event_handler.socket_state_update(
+                event.token(),
+                SocketPollState::Shutdown,
+            )?;
+        }
 
 
         Ok(())
