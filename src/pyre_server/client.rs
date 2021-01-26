@@ -6,7 +6,7 @@ use std::error::Error;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-use crate::pyre_server::transport::Transport;
+use crate::pyre_server::transport::EventLoopHandle;
 
 
 /// A handler for a TcpStream.
@@ -24,7 +24,13 @@ pub struct Client {
     pub stream: TcpStream,
 
     /// A cheaply cloneable handle for updating event loop calls.
-    transport: Transport,
+    transport: EventLoopHandle,
+
+    /// Is the socket being listened to by the event loop for reading.
+    pub is_reading: bool,
+
+    /// Is the socket being listened to by the event loop for writing.
+    pub is_writing: bool,
 }
 
 impl Client {
@@ -34,13 +40,16 @@ impl Client {
         token: Token,
         stream: TcpStream,
         addr: SocketAddr,
-        transport: Transport,
+        transport: EventLoopHandle,
     ) -> Self {
         Self {
             token,
             stream,
             addr,
             transport,
+
+            is_reading: false,
+            is_writing: false,
         }
     }
 }

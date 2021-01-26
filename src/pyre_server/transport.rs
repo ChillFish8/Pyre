@@ -17,16 +17,48 @@ pub enum EventUpdate {
 }
 
 #[derive(Clone)]
-pub struct Transport {
+pub struct EventLoopHandle {
     internal: UpdatesQueue,
     waker: Arc<Waker>
 }
 
-impl Transport {
+impl EventLoopHandle {
     pub fn from_queue_and_waker(
         internal: UpdatesQueue,
         waker: Arc<Waker>
     ) -> Self {
         Self { internal, waker }
+    }
+
+    pub fn pause_reading(&self, token: Token) {
+        let update = EventUpdate::PauseReading(token);
+        self.internal.push(update);
+
+        self.waker.wake()
+            .expect("Failed to wake event loop");
+    }
+
+    pub fn pause_writing(&self, token: Token) {
+        let update = EventUpdate::PauseWriting(token);
+        self.internal.push(update);
+
+        self.waker.wake()
+            .expect("Failed to wake event loop");
+    }
+
+    pub fn resume_reading(&self, token: Token) {
+        let update = EventUpdate::ResumeReading(token);
+        self.internal.push(update);
+
+        self.waker.wake()
+            .expect("Failed to wake event loop");
+    }
+
+    pub fn resume_writing(&self, token: Token) {
+        let update = EventUpdate::ResumeWriting(token);
+        self.internal.push(update);
+
+        self.waker.wake()
+            .expect("Failed to wake event loop");
     }
 }

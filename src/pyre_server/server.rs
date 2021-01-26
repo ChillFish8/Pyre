@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use crossbeam::queue::SegQueue;
 
 use crate::pyre_server::client::Client;
-use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, Transport};
+use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, EventLoopHandle};
 
 
 /// The standard server identifier token.
@@ -77,13 +77,13 @@ pub struct HighLevelServer {
     counter: TokenCounter,
 
     /// A queue of updates that stack up for the event loop.
-    transport: Transport,
+    transport: EventLoopHandle,
 }
 
 impl HighLevelServer {
     /// Build a new HighLevelServer that takes the poll struct instance
     /// in order to share it with clients.
-    pub fn new(transport: Transport) -> Self {
+    pub fn new(transport: EventLoopHandle) -> Self {
         let clients = FxHashMap::default();
         let counter = TokenCounter::new();
 
@@ -133,6 +133,10 @@ impl HighLevelServer {
         Ok(())
     }
 
+    fn get_client(&mut self, token: &Token) -> &mut Client {
+        self.clients.get_mut(token)
+            .expect("Failed to get client from token.")
+    }
 }
 
 
@@ -175,7 +179,7 @@ impl LowLevelServer {
             CHECK_UPDATE
         )?;
 
-        let transport = Transport::from_queue_and_waker(
+        let transport = EventLoopHandle::from_queue_and_waker(
             updates.clone(),
             Arc::new(waker),
         );
@@ -243,19 +247,16 @@ impl LowLevelServer {
                 },
             };
             self.event_handler.client_accepted(client, addr)?;
-        }
-
-        self.poll.registry()
-            .reregister(
-            &mut self.listener,
-            SERVER,
-            Interest::READABLE
-            )?;
+        };
 
         Ok(())
     }
 
+    /// Handles any update events received e.g. adding reading and writers.
     fn on_update_wakeup(&mut self) -> Result<(), Box<dyn Error>> {
+        while let Some(update) = self.updates.pop() {
+            self.handle_update(update)?;
+        }
 
         Ok(())
     }
@@ -267,27 +268,137 @@ impl LowLevelServer {
         event: &Event
     )  -> Result<(), Box<dyn Error>> {
 
+        let token = event.token();
         if event.is_readable() {
             self.event_handler.socket_state_update(
-                event.token(),
+                token,
                 SocketPollState::Read
             )?;
-        }
-
-        if event.is_writable() {
+        } else if event.is_writable() {
             self.event_handler.socket_state_update(
-                event.token(),
+                token,
                 SocketPollState::Write
             )?;
-        }
-
-        if event.is_write_closed() | event.is_read_closed() {
+        } else if event.is_write_closed() | event.is_read_closed() {
             self.event_handler.socket_state_update(
-                event.token(),
+                token,
                 SocketPollState::Shutdown,
             )?;
+            self.pause_writing(token)?;
+            self.pause_reading(token)?;
         }
 
+
+        Ok(())
+    }
+}
+
+impl LowLevelServer {
+    fn handle_update(&mut self, update: EventUpdate) -> io::Result<()> {
+        match update {
+            EventUpdate::PauseReading(token) => self.pause_reading(
+                token,
+            ),
+            EventUpdate::PauseWriting(token) => self.pause_writing(
+                token
+            ),
+            EventUpdate::ResumeReading(token) => self.resume_reading(
+                token
+            ),
+            EventUpdate::ResumeWriting(token) => self.resume_writing(
+                token
+            ),
+        }
+    }
+
+    fn pause_reading(&mut self, token: Token) -> io::Result<()> {
+        let client = self.event_handler.get_client(&token);
+
+        // Only need to change something if its actually doing it.
+        if client.is_reading {
+            if client.is_writing {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::WRITABLE,
+                )?;
+            } else {
+                self.poll.registry().deregister(&mut client.stream)?;
+            }
+
+            client.is_reading = false;
+        }
+
+        Ok(())
+    }
+
+    fn pause_writing(&mut self, token: Token) -> io::Result<()> {
+        let client = self.event_handler.get_client(&token);
+
+        // Only need to change something if its actually doing it.
+        if client.is_writing {
+            if client.is_reading {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::READABLE,
+                )?;
+            } else {
+                self.poll.registry().deregister(&mut client.stream)?;
+            }
+
+            client.is_writing = false;
+        }
+
+        Ok(())
+    }
+
+    fn resume_reading(&mut self, token: Token) -> io::Result<()> {
+        let client = self.event_handler.get_client(&token);
+
+        // Only need to change something if its actually doing it.
+        if !client.is_reading {
+            if client.is_writing {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::READABLE | Interest::WRITABLE,
+                )?;
+            } else {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::READABLE,
+                )?;
+            }
+
+            client.is_reading = true;
+        }
+
+        Ok(())
+    }
+
+    fn resume_writing(&mut self, token: Token) -> io::Result<()> {
+        let client = self.event_handler.get_client(&token);
+
+        // Only need to change something if its actually doing it.
+        if !client.is_writing {
+            if client.is_reading {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::READABLE | Interest::WRITABLE,
+                )?;
+            } else {
+                self.poll.registry().reregister(
+                    &mut client.stream,
+                    token,
+                    Interest::WRITABLE,
+                )?;
+            }
+
+            client.is_writing = true;
+        }
 
         Ok(())
     }
