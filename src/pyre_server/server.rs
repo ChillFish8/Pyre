@@ -5,16 +5,14 @@ use mio::event::Event;
 use std::net::SocketAddr;
 use std::io;
 use std::error::Error;
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustc_hash::FxHashMap;
-use crossbeam::queue::SegQueue;
 
 use crate::pyre_server::client::Client;
 use crate::pyre_server::transport::{UpdatesQueue, EventUpdate, EventLoopHandle};
-use std::time::Duration;
+
 
 
 /// The standard server identifier token.
@@ -95,6 +93,32 @@ impl HighLevelServer {
         }
     }
 
+    /// Finds the first client that is classed as 'idle' which is
+    /// then selected to be used as the handler of the new connection.
+    fn get_idle_client(&self) -> Option<Token> {
+        for (key, client) in self.clients.iter() {
+            if client.is_idle {
+                return Some(*key)
+            }
+        }
+
+        None
+    }
+
+    /// Selects a index using either an existing idle protocol instance
+    /// or making a new protocol by returning a index that does not exist in
+    /// the clients hashmap.
+    fn select_token(&mut self) -> Token {
+        match self.get_idle_client() {
+            Some(token) => token,
+            None => {
+                let token = self.counter.next();
+
+                token
+            }
+        }
+    }
+
     /// Invoked when ever a client is accepted from the listener.
     fn client_accepted(
         &mut self,
@@ -102,15 +126,23 @@ impl HighLevelServer {
         addr: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
 
-        let token = self.counter.next();
-        let client = Client::build_from(
-            token,
-            stream,
-            addr,
-            self.transport.clone(),
-        );
+        let token = self.select_token();
 
-        self.clients.insert(token, client);
+        if let Some(client) = self.clients.get_mut(&token) {
+            client.handle_new(
+                stream,
+                addr
+            );
+        } else {
+            let client = Client::build_from(
+                token,
+                stream,
+                addr,
+                self.transport.clone(),
+            );
+
+            self.clients.insert(token, client);
+        }
 
         self.transport.resume_reading(token);
 
@@ -138,7 +170,11 @@ impl HighLevelServer {
 
     /// Invoked every n seconds checking for keep alive on sockets.
     fn keep_alive_tick(&mut self) {
-
+        for (_, client) in self.clients.iter_mut() {
+            if let Err(e) = client.check_keep_alive() {
+                eprintln!("Exception handling client: {:?}", e);
+            };
+        }
     }
 
     fn get_client(&mut self, token: &Token) -> &mut Client {

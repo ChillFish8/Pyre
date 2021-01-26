@@ -11,6 +11,7 @@ use crate::pyre_server::server;
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
+use std::time::Duration;
 
 
 /// Creates a client handler instance linked to a TcpListener and event loop.
@@ -30,14 +31,21 @@ use pyo3::wrap_pyfunction;
 fn create_server(
     host: &str,
     port: u16,
+    keep_alive: f64,
 ) -> PyResult<()> {
     println!("Running on http://{}:{}", host, port);
     let bind = format!("{}:{}", host, port);
+    let keep_alive = Duration::from_secs_f64(keep_alive);
 
-    let mut server = server::LowLevelServer::from_addr(bind)?;
+    let mut server = server::LowLevelServer::from_addr(
+        bind,
+        keep_alive,
+    )?;
+
     if let Err(e) = server.start() {
         eprintln!("{:?}", e);
     };
+
     Ok(())
 }
 

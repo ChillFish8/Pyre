@@ -1,10 +1,8 @@
 use mio::net::TcpStream;
-use mio::{Token, Poll};
+use mio::Token;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Shutdown};
 use std::error::Error;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 use crate::pyre_server::transport::EventLoopHandle;
 
@@ -31,6 +29,10 @@ pub struct Client {
 
     /// Is the socket being listened to by the event loop for writing.
     pub is_writing: bool,
+
+    /// Whether or not the client is idle by not handling the stream
+    /// anymore or is inactive.
+    pub is_idle: bool,
 }
 
 impl Client {
@@ -50,7 +52,23 @@ impl Client {
 
             is_reading: false,
             is_writing: false,
+            is_idle: false,
         }
+    }
+
+    /// Allows the client to handle a new stream by essentially
+    /// resetting it state.
+    pub fn handle_new(
+        &mut self,
+        stream: TcpStream,
+        addr: SocketAddr,
+    ) {
+        self.stream = stream;
+        self.addr = addr;
+
+        self.is_reading = false;
+        self.is_writing = false;
+        self.is_idle = false;
     }
 }
 
@@ -86,6 +104,12 @@ impl Client {
     /// NOTE:
     /// This is not guaranteed to always be called when a socket shuts down.
     pub fn sock_shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        self.is_idle = true;
+        let _ = self.stream.shutdown(Shutdown::Write);
+        Ok(())
+    }
+
+    pub fn check_keep_alive(&mut self) -> Result<(), Box<dyn Error>> {
 
         Ok(())
     }
